@@ -3,11 +3,15 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const uuidv4 = require("uuid/v4");
+const redis = require("redis");
+const {promisify} = require("util");
+const util = require('util');
+require('util.promisify').shim();
 
 const app = express();
 
 const PUBLIC_FOLDER = path.join(__dirname, "../public");
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 const socketsPerChannels /* Map<string, Set<WebSocket>> */ = new Map();
 const channelsPerSocket /* WeakMap<WebSocket, Set<string> */ = new WeakMap();
@@ -17,6 +21,18 @@ const server = http.createServer(app);
 
 // Initialize the WebSocket server instance
 const wss = new WebSocket.Server({ server });
+
+
+/* redis*/
+const subscriber = redis.createClient();
+
+const set = util.promisify(subscriber.set).bind(subscriber);
+const get = util.promisify(subscriber.get).bind(subscriber);
+
+const publisher = redis.createClient();
+
+const setter = util.promisify(publisher.set).bind(publisher);
+const getter = util.promisify(publisher.get).bind(publisher);
 
 /*
  * Subscribe a socket to a specific channel.
@@ -30,6 +46,10 @@ function subscribe(socket, channel) {
 
     socketsPerChannels.set(channel, socketSubscribed);
     channelsPerSocket.set(socket, channelSubscribed);
+    if(socketSubscribed.size == 0){
+        subscriber.subscribe(channel);
+    }
+    console.log("subscribe to channel"+channel);
 }
 
 /*
@@ -41,6 +61,10 @@ function unsubscribe(socket, channel) {
 
     socketSubscribed.delete(socket);
     channelSubscribed.delete(channel);
+
+    if(socketSubscribed.size == 0){
+        subscriber.unsubscribe(channel);
+    }
 
     socketsPerChannels.set(channel, socketSubscribed);
     channelsPerSocket.set(socket, channelSubscribed);
@@ -62,7 +86,7 @@ function unsubscribeAll(socket) {
  */
 function broadcastToSockets(channel, data) {
     const socketSubscribed = socketsPerChannels.get(channel) || new Set();
-
+    publisher.publish(channel, data);
     socketSubscribed.forEach(client => {
         client.send(data);
     });
@@ -88,6 +112,11 @@ wss.on("connection", ws => {
     });
 });
 
+subscriber.on("message", function(channel, message) {
+    console.log(message);
+    broadcastToSockets(channel, message);
+});
+
 // Assign a random channel to people opening the application
 app.get("/", (req, res) => {
     res.redirect(`/${uuidv4()}`);
@@ -106,3 +135,7 @@ app.use(express.static(PUBLIC_FOLDER));
 server.listen(PORT, () => {
     console.log(`Server started on port ${server.address().port}`);
 });
+
+
+
+
